@@ -7,6 +7,7 @@ from transformer_lens.hook_points import HookPoint
 # %%
 def run_causal_tracing(model: HookedTransformer,
                        clean_tokens: t.Tensor,
+                       corrupted_tokens: t.Tensor,
                        subject_dim: int,
                        state_to_patch):
     """
@@ -25,6 +26,7 @@ def run_causal_tracing(model: HookedTransformer,
     print("Causal tracing...")
 
 
+
     ### Clean run
     clean_logits, clean_cache = model.run_with_cache(clean_tokens) 
     print()
@@ -32,15 +34,15 @@ def run_causal_tracing(model: HookedTransformer,
     print(clean_cache.keys)
 
     ### Corrupted run
-
-    corrupted_logits = model.run_with_hooks(clean_tokens, 
-                                            fwd_hooks=[(state_to_patch, make_resid_hook(subject_dim))])
-                                            # fwd_hooks=[(state_to_patch, lambda x: x)])
-
-    
+    # TODO: corrupt the input tokens 
+    '''corrupted_logits = model.run_with_hooks(clean_tokens, 
+                                            fwd_hooks=[(state_to_patch, make_resid_hook(subject_dim))])'''
+    corrupted_logits, corrupted_cache = model.run_with_cache(corrupted_tokens)
     ### Corrupted-with-restoration run
     # i.e. run w/ corrupted input while restoring/replacing 
     # the activations for 1 token + layer combination with the clean activations
+    corrupted_with_restoration_logits = model.run_with_hooks(corrupted_tokens,
+                                                             fwd_hooks=[(state_to_patch, make_restoration_hook)])
 
     return clean_logits, corrupted_logits
 
@@ -50,23 +52,28 @@ def run_causal_tracing(model: HookedTransformer,
 def make_activation_hook(subject_mask):
     def corrupt_activations_hook_func(activation_value,  #"batch head_idx seqQ seqK"
                                       hook: HookPoint):
-        print(activation_value[:, :, 0, 0])
         activation_value[:, 1:3, :, :] = 0 # TODO: make this as in the paper
-        print(activation_value[:, : , 0, 0])
-
         print(f"{subject_dim=}", f"{activation_value[:, :, :, subject_mask].shape=}")
-        print(f"{activation_value.shape=}")
         return activation_value
+    
     return corrupt_activations_hook_func
 
 def make_resid_hook(subject_mask):
     def corrupt_activations_hook_func(resid_value,  #"batch head_idx seqQ seqK"
                                       hook: HookPoint):
         print(f"{resid_value.shape=}")
-        resid_value[:, 1:2, :] = 0 # TODO: make this as in the paper
+        resid_value[:, 1:2, :] = 0 # TODO: make this as in the paper i.e add Gaussian noise
 
         return resid_value
     return corrupt_activations_hook_func
+
+def make_restoration_hook(clean_cache, activation_name):
+    print(clean_cache)
+    clean_activations = clean_cache[activation_name]
+    def corrupt_with_restoration_hook_func(corrupted_value,
+                                           hook: HookPoint):
+        corrupted_value[:, token_idx] = clean_cache
+
 
 
 # %%
@@ -81,31 +88,34 @@ def total_effect(clean_logits,
 # %%
 if __name__ == "__main__":
     gpt: HookedTransformer = HookedTransformer.from_pretrained(model_name="gpt2-small", device="cpu")
-    example = {
+    example_1 = {
                 "known_id": 2,
                 "subject": "Audible.com",
                 "attribute": "Amazon",
                 "template": "{} is owned by",
                 "prediction": " Amazon.com, Inc. or its affiliates.",
                 "prompt": "Audible.com is owned by",
+                "corrupt_prompt": "Spotify is owned by",
                 "relation_id": "P127"
             }
     example_2 = {"subject": "Mary",
-                 "prompt": "Mary had a little lamb, something"
+                 "prompt": "Mary had a little lamb, something",
+                 "corrupt_prompt": "Nina had a little lamb, something"
             }
     
     example_3 = {"subject": "Rome",
-                 "prompt": "Rome is the capital of"
+                 "prompt": "Rome is the capital of",
+                 "corrupt_prompt": "Paris is the capital of"
             }
 
     example = example_3
+    corrupted_tokens = gpt.to_tokens(example["corrupt_prompt"])
 
-    print(gpt.to_tokens(example["prompt"]), gpt.to_tokens(example["subject"]))
     subject_dim = gpt.to_tokens(example["subject"]).shape[-1]
-    print("subject dum", subject_dim)
  
     clean_logits, corrupted_logits = run_causal_tracing(model=gpt, 
                                                clean_tokens=gpt.to_tokens(example["prompt"]),
+                                               corrupted_tokens=corrupted_tokens,
                                                subject_dim=subject_dim,
                                                # state_to_patch='blocks.11.attn.hook_k')
                                                state_to_patch='blocks.0.hook_resid_pre')
@@ -125,8 +135,8 @@ if __name__ == "__main__":
     print("Model completion clean:", gpt.to_str_tokens(clean_preds)) 
     print("Model completion corrupted:", gpt.to_str_tokens(corrupted_preds)) 
     print("Top predictions last token", gpt.to_str_tokens(to_preds_last_token))
-    print(f"Clean predictions for {str_to_evaluate}:\n", clean_logits[:, -1, tokens_to_evaluate])
-    print(f"Corrupted predictions for {str_to_evaluate}:\n", corrupted_logits[:, -1, tokens_to_evaluate])
+    print(f"Clean logits for {str_to_evaluate}:\n", clean_logits[:, -1, tokens_to_evaluate])
+    print(f"Corrupted logits for {str_to_evaluate}:\n", corrupted_logits[:, -1, tokens_to_evaluate])
 
     # Get the pos for the object (o) token from the prompt
     # That's just the len(prompt) + 1
