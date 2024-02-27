@@ -25,8 +25,6 @@ def run_causal_tracing(model: HookedTransformer,
 
     print("Causal tracing...")
 
-
-
     ### Clean run
     clean_logits, clean_cache = model.run_with_cache(clean_tokens) 
     print()
@@ -34,17 +32,18 @@ def run_causal_tracing(model: HookedTransformer,
     print(clean_cache.keys)
 
     ### Corrupted run
-    # TODO: corrupt the input tokens 
     '''corrupted_logits = model.run_with_hooks(clean_tokens, 
                                             fwd_hooks=[(state_to_patch, make_resid_hook(subject_dim))])'''
-    corrupted_logits, corrupted_cache = model.run_with_cache(corrupted_tokens)
+    corrupted_logits, _ = model.run_with_cache(corrupted_tokens)
+
     ### Corrupted-with-restoration run
     # i.e. run w/ corrupted input while restoring/replacing 
     # the activations for 1 token + layer combination with the clean activations
     corrupted_with_restoration_logits = model.run_with_hooks(corrupted_tokens,
-                                                             fwd_hooks=[(state_to_patch, make_restoration_hook)])
+                                                             fwd_hooks=[(state_to_patch, make_restoration_hook(clean_cache, 0, 0, "resid"))])
 
-    return clean_logits, corrupted_logits
+
+    return clean_logits, corrupted_logits, corrupted_with_restoration_logits
 
 
 
@@ -67,15 +66,28 @@ def make_resid_hook(subject_mask):
         return resid_value
     return corrupt_activations_hook_func
 
-def make_restoration_hook(clean_cache, activation_name):
+def make_restoration_hook(clean_cache, token, layer, activation_name="mlp"):
     print(clean_cache)
-    clean_activations = clean_cache[activation_name]
-    def corrupt_with_restoration_hook_func(corrupted_value,
+    # activation_name: mlp, attention
+
+    if activation_name == "attention":
+        name = f"blocks.{layer}.attn.hook_k"  # hook_pattern?
+    elif activation_name == "mlp":
+        name = f"blocks.{layer}.hook_mlp_out"
+    elif activation_name == "resid":
+        name = f"blocks.{layer}.hook_resid_post"
+
+    def corrupt_with_restoration_hook_func(corrupted_activation_value,
                                            hook: HookPoint):
-        corrupted_value[:, token_idx] = clean_cache
+        print("Shapes targets", corrupted_activation_value.shape, clean_cache[name].shape)
+        # corrupted_activation_value: [1, 6, 768]
+        # TODO: why the 6 in the 2nd dim?
+        # clean_cache[name]: [1, 7, 12, 64]
+        corrupted_activation_value[:, token] = clean_cache[name][:, token]
+        return corrupted_activation_value
+    return corrupt_with_restoration_hook_func
 
-
-
+ 
 # %%
 def total_effect(clean_logits,
                  corrupted_logits,
@@ -113,15 +125,21 @@ if __name__ == "__main__":
 
     subject_dim = gpt.to_tokens(example["subject"]).shape[-1]
  
-    clean_logits, corrupted_logits = run_causal_tracing(model=gpt, 
-                                               clean_tokens=gpt.to_tokens(example["prompt"]),
-                                               corrupted_tokens=corrupted_tokens,
-                                               subject_dim=subject_dim,
-                                               # state_to_patch='blocks.11.attn.hook_k')
-                                               state_to_patch='blocks.0.hook_resid_pre')
+    # TODO: which states to start patching first? E.g. MLP layers 
+    # MLP layer 1 vs MLP mid layer
+
+    #state_to_patch='blocks.11.attn.hook_k'
+    state_to_patch='blocks.0.hook_resid_pre'
+    #state_to_patch = 'blocks.0.hook_mlp_out'
+    clean_logits, corrupted_logits, corrupted_w_restoration_logits = run_causal_tracing(model=gpt, 
+                                                                                        clean_tokens=gpt.to_tokens(example["prompt"]),
+                                                                                        corrupted_tokens=corrupted_tokens,
+                                                                                        subject_dim=subject_dim,
+                                                                                        state_to_patch=state_to_patch)
     
-    corrupted_preds = corrupted_logits.argmax(dim=-1).squeeze()
     clean_preds = clean_logits.argmax(dim=-1).squeeze()
+    corrupted_preds = corrupted_logits.argmax(dim=-1).squeeze()
+    corrupted_w_rest_preds = corrupted_w_restoration_logits.argmax(dim=-1).squeeze()
 
     to_preds_last_token = t.topk(corrupted_logits[:, -1, :].squeeze(), k=10).indices
 
@@ -130,15 +148,17 @@ if __name__ == "__main__":
     tokens_to_evaluate = gpt.to_tokens(str_to_evaluate, prepend_bos=False)
 
 
-    #print(f"Corrupted prompt: \"{corrupted_prompt} ___\"")
     print("Prompt tokenized", gpt.to_str_tokens(example["prompt"]))
     print("Model completion clean:", gpt.to_str_tokens(clean_preds)) 
     print("Model completion corrupted:", gpt.to_str_tokens(corrupted_preds)) 
-    print("Top predictions last token", gpt.to_str_tokens(to_preds_last_token))
+    print("Model completion corrupted w/ restoration:", gpt.to_str_tokens(corrupted_w_rest_preds)) 
+
+
+    print("Top predictions last token (corrupted):", gpt.to_str_tokens(to_preds_last_token))
     print(f"Clean logits for {str_to_evaluate}:\n", clean_logits[:, -1, tokens_to_evaluate])
     print(f"Corrupted logits for {str_to_evaluate}:\n", corrupted_logits[:, -1, tokens_to_evaluate])
 
     # Get the pos for the object (o) token from the prompt
     # That's just the len(prompt) + 1
 
-    print("Total effect \" Italy\"", total_effect(clean_logits[0], corrupted_logits[0], pos=gpt.to_tokens(example["prompt"]).shape[-1], token_id=gpt.to_single_token(" Italy")))
+    #print("Total effect \" Italy\"", total_effect(clean_logits[0], corrupted_logits[0], pos=gpt.to_tokens(example["prompt"]).shape[-1], token_id=gpt.to_single_token(" Italy")))
