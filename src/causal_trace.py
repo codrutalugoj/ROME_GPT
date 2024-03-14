@@ -5,45 +5,31 @@ from transformer_lens import HookedTransformer
 from transformer_lens.hook_points import HookPoint
 
 # %%
-def run_causal_tracing(model: HookedTransformer,
-                       clean_tokens: t.Tensor,
-                       corrupted_tokens: t.Tensor,
-                       subject_dim: int,
-                       state_to_patch):
-    """
-    params:
-     state_to_patch: list of hidden states (corrupted) to be replaced with its equivalent clean state
-
-    This function runs the causal tracing algorithm on the list of states to be patched.
-
-    We obtain the corrupted run following the steps:
-        1. embed the clean prompt and obtain [h_1, h_2, ..., h_T]
-        2. set certain activations to h_i = h_i + eps, eps ~ N(0, nu), where nu = 3 * std of emdeddings
-        3. forward pass through net
-        4. get corrupted activations
-    """
+def causal_tracing(model: HookedTransformer,
+                   clean_cache,
+                   corrupted_tokens: t.Tensor,
+                   layer_to_restore,
+                   token_to_restore,
+                   type_to_patch):  # type of layer to patch ("resid", "mlp" or "attention")
 
     print("Causal tracing...")
-
-    ### Clean run
-    clean_logits, clean_cache = model.run_with_cache(clean_tokens) 
-    print()
-    print(clean_cache, type(clean_cache))
-    print(clean_cache.keys)
-
-    ### Corrupted run
-    '''corrupted_logits = model.run_with_hooks(clean_tokens, 
-                                            fwd_hooks=[(state_to_patch, make_resid_hook(subject_dim))])'''
-    corrupted_logits, _ = model.run_with_cache(corrupted_tokens)
 
     ### Corrupted-with-restoration run
     # i.e. run w/ corrupted input while restoring/replacing 
     # the activations for 1 token + layer combination with the clean activations
+    if type_to_patch == "resid":
+        state_to_patch = f"blocks.{layer_to_restore}.hook_resid_post"
+    elif type_to_patch == "mlp":
+        state_to_patch = f"blocks.{layer_to_restore}.hook_mlp_out"
+    elif state_to_patch == "attention":
+        state_to_patch = f"blocks.{layer_to_restore}.attn.hook_k"
+
     corrupted_with_restoration_logits = model.run_with_hooks(corrupted_tokens,
-                                                             fwd_hooks=[(state_to_patch, make_restoration_hook(clean_cache, 0, 0, "resid"))])
+                                                             fwd_hooks=[(state_to_patch, make_restoration_hook(clean_cache, 
+                                                                                                               token_to_restore))])
 
 
-    return clean_logits, corrupted_logits, corrupted_with_restoration_logits
+    return corrupted_with_restoration_logits
 
 
 
@@ -66,24 +52,15 @@ def make_resid_hook(subject_mask):
         return resid_value
     return corrupt_activations_hook_func
 
-def make_restoration_hook(clean_cache, token, layer, activation_name="mlp"):
-    print(clean_cache)
+def make_restoration_hook(clean_cache, token):
     # activation_name: mlp, attention
-
-    if activation_name == "attention":
-        name = f"blocks.{layer}.attn.hook_k"  # hook_pattern?
-    elif activation_name == "mlp":
-        name = f"blocks.{layer}.hook_mlp_out"
-    elif activation_name == "resid":
-        name = f"blocks.{layer}.hook_resid_post"
 
     def corrupt_with_restoration_hook_func(corrupted_activation_value,
                                            hook: HookPoint):
-        print("Shapes targets", corrupted_activation_value.shape, clean_cache[name].shape)
         # corrupted_activation_value: [1, 6, 768]
         # TODO: why the 6 in the 2nd dim?
         # clean_cache[name]: [1, 7, 12, 64]
-        corrupted_activation_value[:, token] = clean_cache[name][:, token]
+        corrupted_activation_value[:, token] = clean_cache[hook.name][:, token]
         return corrupted_activation_value
     return corrupt_with_restoration_hook_func
 
@@ -131,11 +108,12 @@ if __name__ == "__main__":
     #state_to_patch='blocks.11.attn.hook_k'
     state_to_patch='blocks.0.hook_resid_pre'
     #state_to_patch = 'blocks.0.hook_mlp_out'
-    clean_logits, corrupted_logits, corrupted_w_restoration_logits = run_causal_tracing(model=gpt, 
+    clean_logits, corrupted_logits, corrupted_w_restoration_logits = causal_tracing(model=gpt, 
                                                                                         clean_tokens=gpt.to_tokens(example["prompt"]),
                                                                                         corrupted_tokens=corrupted_tokens,
                                                                                         subject_dim=subject_dim,
-                                                                                        state_to_patch=state_to_patch)
+                                                                                        state_to_patch=state_to_patch,
+                                                                                        type_to_patch="resid")
     
     clean_preds = clean_logits.argmax(dim=-1).squeeze()
     corrupted_preds = corrupted_logits.argmax(dim=-1).squeeze()
