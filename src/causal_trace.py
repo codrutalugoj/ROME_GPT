@@ -12,16 +12,16 @@ def causal_tracing(model: HookedTransformer,
                    token_to_restore,
                    type_to_patch):  # type of layer to patch ("resid", "mlp" or "attention")
 
-    print("Causal tracing...")
+    #print("Causal tracing...")
 
     ### Corrupted-with-restoration run
     # i.e. run w/ corrupted input while restoring/replacing 
     # the activations for 1 token + layer combination with the clean activations
     if type_to_patch == "resid":
-        state_to_patch = f"blocks.{layer_to_restore}.hook_resid_post"
+        state_to_patch = f"blocks.{layer_to_restore}.hook_resid_pre"
     elif type_to_patch == "mlp":
         state_to_patch = f"blocks.{layer_to_restore}.hook_mlp_out"
-    elif state_to_patch == "attention":
+    elif type_to_patch == "attention":
         state_to_patch = f"blocks.{layer_to_restore}.attn.hook_k"
 
     corrupted_with_restoration_logits = model.run_with_hooks(corrupted_tokens,
