@@ -30,16 +30,24 @@ print("Model completion:", gpt.to_str_tokens(clean_preds)[-1])
 # where stddev comes from a sample of prompts. 
 # Note: Neel Nanda e.g. just swaps around the 2 subject tokens.
 # (https://colab.research.google.com/github/neelnanda-io/TransformerLens/blob/main/demos/Activation_Patching_in_TL_Demo.ipynb)
-corrupt_prompt = "The Space Station is in downtown"
-corrupt_tokens = gpt.to_tokens(corrupt_prompt, prepend_bos=True)
-corrupt_logits = gpt(corrupt_tokens, )
-corrupt_preds = corrupt_logits.argmax(dim=-1).squeeze()
+corrupted_prompt = "The Space Station is in downtown"
+corrupted_tokens = gpt.to_tokens(corrupted_prompt, prepend_bos=True)
+corrupted_logits = gpt(corrupted_tokens, )
+corrupted_preds = corrupted_logits.argmax(dim=-1).squeeze()
 
-print(f"Corrupted prompt: \"{corrupt_prompt} ___\"")
-print("Model completion:", gpt.to_str_tokens(corrupt_preds)[-1]) # model's output is different 
+print(f"Corrupted prompt: \"{corrupted_prompt} ___\"")
+print("Model completion:", gpt.to_str_tokens(corrupted_preds)[-1]) # model's output is different 
 
 
 # %%
 print(embeddings)
 print(embeddings.shape)
 print(embeddings.std())
+
+# %%
+# "post": output after MLP block
+clean_logits, corrupted_logits = run_causal_tracing(model=gpt, 
+                                clean_tokens=clean_tokens, 
+                                subject_dim=sub
+                                state_to_patch='blocks.0.attn.hook_pattern')
+

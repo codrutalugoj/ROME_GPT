@@ -19,10 +19,11 @@ def causal_tracing(model: HookedTransformer,
     # the activations for 1 token + layer combination with the clean activations
     if type_to_patch == "resid":
         state_to_patch = f"blocks.{layer_to_restore}.hook_resid_pre"
+    # TODO: get center of interval for 10 layers for mlp and attn layers
     elif type_to_patch == "mlp":
         state_to_patch = f"blocks.{layer_to_restore}.hook_mlp_out"
     elif type_to_patch == "attention":
-        state_to_patch = f"blocks.{layer_to_restore}.attn.hook_k"
+        state_to_patch = f"blocks.{layer_to_restore}.attn.hook_result"
 
     corrupted_with_restoration_logits = model.run_with_hooks(corrupted_tokens,
                                                              fwd_hooks=[(state_to_patch, make_restoration_hook(clean_cache, 
@@ -102,9 +103,6 @@ if __name__ == "__main__":
 
     subject_dim = gpt.to_tokens(example["subject"]).shape[-1]
  
-    # TODO: which states to start patching first? E.g. MLP layers 
-    # MLP layer 1 vs MLP mid layer
-
     #state_to_patch='blocks.11.attn.hook_k'
     state_to_patch='blocks.0.hook_resid_pre'
     #state_to_patch = 'blocks.0.hook_mlp_out'
